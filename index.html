@@ -88,8 +88,8 @@
   .scanner.show{display:block}
   .scanner video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
   .scan-frame{
-    position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);
-    width:78%;max-width:340px;height:180px;border-radius:16px;
+    position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);
+    width:62%;max-width:280px;height:22vh;min-height:110px;max-height:150px;border-radius:14px;
     border:2px solid rgba(255,255,255,.92);
     box-shadow:0 0 0 100vmax rgba(0,0,0,.45);
     pointer-events:none;
@@ -201,7 +201,7 @@
 
 <p class="hint">
   提示：摄像头需在 HTTPS 环境下使用。<br>
-  扫一次可同时识别 UPC（69码）与 Serial No.（SN码），也可拍照后自动识别。
+  扫码时把条码放进取景框、尽量占满框；条码读不到会自动改读包装上印的 UPC / Serial No. 文字。
 </p>
 
 <!-- 底部操作栏 -->
@@ -494,7 +494,7 @@ const BARCODE_FORMATS = [
 const scan = {
   stream: null, detector: null, reader: null,
   timer: null, rvfcId: 0, target: null, active: false,
-  torchTrack: null, torchOn: false
+  torchTrack: null, torchOn: false, startedAt: 0, ocrTried: false
 };
 
 function setTip(msg) { scanTipEl.textContent = msg; }
@@ -502,6 +502,8 @@ function setTip(msg) { scanTipEl.textContent = msg; }
 async function openScanner(targetId) {
   scan.target = targetId;
   scan.active = true;
+  scan.startedAt = Date.now();
+  scan.ocrTried = false;
   scannerEl.classList.add('show');
   setTip('正在启动摄像头…');
 
@@ -538,18 +540,37 @@ async function openScanner(targetId) {
   }
 }
 
+/* 取景框裁剪参数：只截框内中间条带并放大 1.8 倍再解码，
+   手机镜头的细条码（UPC / Code128）成功率提升明显 */
+const CROP = { w: 0.62, h: 0.34, scale: 1.8 };
+const cropCanvas = document.createElement('canvas');
+
+function grabFrame() {
+  const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+  if (!vw || !vh) return null;
+  const cw = Math.round(vw * CROP.w);
+  const ch = Math.round(vh * CROP.h);
+  const sx = Math.round((vw - cw) / 2);
+  const sy = Math.max(0, Math.round(vh * 0.46 - ch / 2));
+  cropCanvas.width  = Math.round(cw * CROP.scale);
+  cropCanvas.height = Math.round(ch * CROP.scale);
+  const ctx = cropCanvas.getContext('2d');
+  ctx.drawImage(videoEl, sx, sy, cw, ch, 0, 0, cropCanvas.width, cropCanvas.height);
+  return cropCanvas;
+}
+
 async function beginDecode() {
   // 方案 A：原生 BarcodeDetector
   if ('BarcodeDetector' in window) {
     try {
       scan.detector = new BarcodeDetector({ formats: BARCODE_FORMATS });
-      setTip('将包装条码对准取景框\nUPC 和 Serial No. 可一次同时识别');
-      scheduleTick();
+      setTip('把条码放进框内、尽量占满框\nUPC 与 Serial No. 可一次同时识别');
+      scanLoop();
       return;
     } catch (e) { /* 继续降级 */ }
   }
 
-  // 方案 B：ZXing
+  // 方案 B：ZXing（同样只解裁剪后的画面）
   try {
     await loadZXing();
     const Z = window.ZXing;
@@ -564,49 +585,95 @@ async function beginDecode() {
     ]);
     hints.set(Z.DecodeHintType.TRY_HARDER, true);
 
-    scan.reader = new Z.BrowserMultiFormatReader(hints, {
-      delayBetweenScanAttempts: 60,
-      delayBetweenScanSuccess: 500
-    });
-    setTip('将包装条码对准取景框\nUPC 和 Serial No. 可一次同时识别');
-    scan.reader.decodeFromStream(scan.stream, videoEl, (result) => {
-      if (result && scan.active) {
-        handleCodes([{ text: result.getText(), format: zxingFmtName(result) }]);
-      }
-    });
+    scan.reader = new Z.BrowserMultiFormatReader(hints);
+    setTip('把条码放进框内、尽量占满框\nUPC 与 Serial No. 可一次同时识别');
+    scanLoop();
   } catch (e) {
-    setTip('条码识别组件加载失败\n请检查网络，或使用「拍照识别」');
+    // 条码引擎不可用（多为网络/CDN 问题）→ 直接走文字识别
+    setTip('条码组件不可用，改为识别包装文字…');
+    scan.timer = setTimeout(() => {
+      if (!scan.active) return;
+      scan.ocrTried = true;
+      tryAutoOcr();
+    }, 600);
   }
 }
 
-async function tick() {
-  if (!scan.active || !scan.detector) return;
-  try {
-    if (videoEl.readyState >= 2) {
-      const codes = await scan.detector.detect(videoEl);
-      if (codes && codes.length && scan.active) {
-        handleCodes(codes.map(c => ({ text: c.rawValue, format: c.format })));
-        return;
-      }
-    }
-  } catch (e) { /* 忽略单帧错误 */ }
-  scheduleTick();
-}
-
-/* 识别节奏：优先逐帧回调（更快），否则 80ms 轮询 */
-function scheduleTick() {
+async function scanLoop() {
   if (!scan.active) return;
-  if (videoEl.requestVideoFrameCallback) {
-    scan.rvfcId = videoEl.requestVideoFrameCallback(() => tick());
-  } else {
-    scan.timer = setTimeout(tick, 80);
+  const frame = grabFrame();
+  let got = null;
+
+  if (frame) {
+    try {
+      if (scan.detector) {
+        const codes = await scan.detector.detect(frame);
+        if (codes && codes.length) {
+          got = codes.map(c => ({ text: c.rawValue, format: c.format }));
+        }
+      } else if (scan.reader) {
+        const r = await scan.reader.decodeFromCanvas(frame);
+        if (r) got = [{ text: r.getText(), format: zxingFmtName(r) }];
+      }
+    } catch (e) { /* 未命中，继续下一帧 */ }
   }
+
+  if (!scan.active) return;
+  if (got) { handleCodes(got); return; }
+
+  // 连续 6 秒读不到条码 → 抓一帧改做文字识别（每轮扫码只试一次）
+  if (!scan.ocrTried && Date.now() - scan.startedAt > 6000) {
+    scan.ocrTried = true;
+    tryAutoOcr();
+    return;
+  }
+
+  scan.timer = setTimeout(scanLoop, scan.detector ? 50 : 110);
 }
+
+/* 整帧抓图（给 OCR 用，保留条形码下方的印刷数字） */
+const ocrCanvas = document.createElement('canvas');
+function grabFullFrame() {
+  const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+  if (!vw || !vh) return null;
+  const scale = Math.min(1, 1600 / Math.max(vw, vh));
+  ocrCanvas.width  = Math.round(vw * scale);
+  ocrCanvas.height = Math.round(vh * scale);
+  ocrCanvas.getContext('2d').drawImage(videoEl, 0, 0, ocrCanvas.width, ocrCanvas.height);
+  return ocrCanvas;
+}
+
+async function tryAutoOcr() {
+  const frame = grabFullFrame();
+  if (!frame) { scanLoop(); return; }
+
+  setTip('条码没读到，正在识别包装文字…');
+  try {
+    const blob = await new Promise(res => frame.toBlob(res, 'image/jpeg', 0.92));
+    ocrProgressCb = m => {
+      if (m.status === 'recognizing text') {
+        setTip('识别文字中… ' + Math.round((m.progress || 0) * 100) + '%');
+      } else if (m.status === 'loading language traineddata') {
+        setTip('首次使用，正在下载文字识别语言包…');
+      }
+    };
+    const text = await ocrImage(blob, 'eng');
+    ocrProgressCb = null;
+    if (!scan.active) return;
+
+    const codes = codesToFill(extractCodes(text));
+    if (codes.length) { handleCodes(codes); return; }
+    setTip('没读到条码，也未能识别文字\n请点「拍照识别」，让条码和数字占满画面');
+  } catch (e) {
+    ocrProgressCb = null;
+    if (scan.active) setTip('条码识别失败\n可点「拍照识别」靠近拍一张');
+  }
+  if (scan.active) scanLoop();
+}
+
 function cancelTick() {
   clearTimeout(scan.timer);
-  if (scan.rvfcId && videoEl.cancelVideoFrameCallback) {
-    try { videoEl.cancelVideoFrameCallback(scan.rvfcId); } catch (e) {}
-  }
+  scan.timer = null;
   scan.rvfcId = 0;
 }
 
@@ -626,7 +693,67 @@ function classifyCode(text, format) {
   return isUpcLike ? 'code69' : 'sn';
 }
 
-/* ZXing 返回的数字格式 → 名称 */
+/* 从 OCR 文本中提取 UPC（69码）与 Serial No.（SN码）
+   包装上印的人眼可读数字往往比细条码更容易识别 → 作为条码识别失败后的兜底 */
+function extractCodes(raw) {
+  const out = { code69: '', sn: '' };
+  if (!raw) return out;
+
+  const text = String(raw).replace(/[，。；、,;:.：·()（）【】\[\]]/g, ' ');
+  const tokens = text.replace(/\s+/g, ' ').trim().split(' ');
+  if (!tokens.length) return out;
+
+  // ---- 69码：优先 UPC 关键字后面连续的数字段（UPC-A 印刷为 1 95950 39532 7 形式）----
+  const digitRuns = [];
+  let run = [];
+  tokens.forEach(t => {
+    if (/^\d+$/.test(t)) { run.push(t); return; }
+    if (run.length) { digitRuns.push(run.join('')); run = []; }
+  });
+  if (run.length) digitRuns.push(run.join(''));
+
+  const upcIdx = tokens.findIndex(t => /^U\.?P\.?C\.?$/i.test(t));
+  if (upcIdx >= 0) {
+    // UPC 后面 6 个 token 内的纯数字拼起来
+    let buf = '';
+    for (let i = upcIdx + 1; i < Math.min(tokens.length, upcIdx + 8); i++) {
+      if (/^\d+$/.test(tokens[i])) buf += tokens[i];
+      else if (buf) break;
+    }
+    if (/^\d{8,14}$/.test(buf)) out.code69 = buf;
+  }
+  if (!out.code69) {
+    out.code69 = digitRuns.find(s => /^\d{12,13}$/.test(s)) || '';
+  }
+
+  // ---- SN码：Serial No. 之后的字母数字组合（I 与 O 按印刷习惯纠正为 1 / 0）----
+  const snFix = s => String(s).toUpperCase().replace(/O/g, '0').replace(/[^A-Z0-9]/g, '');
+  let idx = tokens.findIndex(t => /^(serial|seria1|serlal|ser[a-z]{2,4}l)$/i.test(t));
+  if (idx >= 0) {
+    for (let i = idx + 1; i < Math.min(tokens.length, idx + 6); i++) {
+      const t = tokens[i];
+      if (/^N[o0]?$/i.test(t)) continue;
+      if (/^[A-Za-z0-9]{8,16}$/.test(t) && /\d/.test(t)) {
+        out.sn = snFix(t);
+        break;
+      }
+    }
+  }
+  if (!out.sn) {
+    // 兜底：10~12 位、同时含字母与数字的独立 token（排除 IMEI 等纯数字）
+    const cand = tokens.find(t => /^[A-Za-z0-9]{10,12}$/.test(t) && /\d/.test(t) && /[A-Za-z]/.test(t));
+    if (cand) out.sn = snFix(cand);
+  }
+  return out;
+}
+
+/* OCR 文本 → 直接填表（扫码兜底用） */
+function codesToFill(extract) {
+  const codes = [];
+  if (extract.code69) codes.push({ text: extract.code69, format: 'upc_a' });
+  if (extract.sn)     codes.push({ text: extract.sn,     format: 'code_128' });
+  return codes;
+}
 function zxingFmtName(result) {
   try {
     const Z = window.ZXing;
@@ -736,18 +863,33 @@ getEl('scanTorch').addEventListener('click', async () => {
   } catch (e) { toast('闪光灯打开失败'); }
 });
 
+/* 多 CDN 依次尝试加载脚本（国内 jsdelivr 偶发不通时的兜底） */
+function loadScript(urls) {
+  return new Promise((resolve, reject) => {
+    let i = 0;
+    const next = () => {
+      if (i >= urls.length) { reject(new Error('脚本加载失败')); return; }
+      const s = document.createElement('script');
+      s.src = urls[i++];
+      s.onload = () => resolve(s.src);
+      s.onerror = () => { s.remove(); next(); };
+      document.head.appendChild(s);
+    };
+    next();
+  });
+}
+
 /* ZXing 懒加载 */
 let zxingPromise = null;
 function loadZXing() {
   if (window.ZXing) return Promise.resolve();
   if (zxingPromise) return zxingPromise;
-  zxingPromise = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
-    s.onload = resolve;
-    s.onerror = () => { zxingPromise = null; reject(new Error('ZXing 加载失败')); };
-    document.head.appendChild(s);
-  });
+  zxingPromise = loadScript([
+    'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js',
+    'https://fastly.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js',
+    'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js',
+    'https://cdn.staticfile.net/zxing/0.21.3/index.min.js'
+  ]).catch(err => { zxingPromise = null; throw err; });
   return zxingPromise;
 }
 
@@ -788,13 +930,35 @@ getEl('photoInput').addEventListener('change', async e => {
   e.target.value = '';
   if (!file) return;
 
-  setTip('正在识别图片中的条码…');
-  const codes = await decodeImageCodes(file);
+  setTip('正在识别条码…');
+  let codes = await decodeImageCodes(file);
+
+  // 条码没解出来 → 改读包装上的文字（UPC 数字 / Serial No.）
+  if (!codes || !codes.length) {
+    setTip('条码不清晰，改为识别文字…');
+    try {
+      ocrProgressCb = m => {
+        if (m.status === 'recognizing text') {
+          setTip('识别中… ' + Math.round((m.progress || 0) * 100) + '%');
+        } else if (m.status) {
+          setTip(m.status === 'loading language traineddata' ? '正在下载语言包…' : '准备识别…');
+        }
+      };
+      const text = await ocrImage(await shrinkImage(file), 'eng');
+      ocrProgressCb = null;
+      codes = codesToFill(extractCodes(text));
+    } catch (err) {
+      ocrProgressCb = null;
+      setTip('文字识别失败：' + (err.message || err) + '\n可再试一次或手动输入');
+      scan.active = true;
+      return;
+    }
+  }
 
   if (codes && codes.length && scan.active) {
     handleCodes(codes);
   } else {
-    setTip('未识别到条码\n请让条码更清晰、占画面更大后重试');
+    setTip('未识别到 69码 / SN码\n请靠近拍摄，让条码和数字占满画面');
     scan.active = true; // 保持可再次选择
   }
 });
@@ -806,14 +970,42 @@ let tesseractPromise = null;
 function loadTesseract() {
   if (window.Tesseract) return Promise.resolve();
   if (tesseractPromise) return tesseractPromise;
-  tesseractPromise = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
-    s.onload = resolve;
-    s.onerror = () => { tesseractPromise = null; reject(new Error('OCR 组件加载失败')); };
-    document.head.appendChild(s);
-  });
+  tesseractPromise = loadScript([
+    'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
+    'https://fastly.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
+    'https://unpkg.com/tesseract.js@5.1.1/dist/tesseract.min.js'
+  ]).catch(err => { tesseractPromise = null; throw new Error('OCR 组件加载失败'); });
   return tesseractPromise;
+}
+
+/* 复用 OCR worker（避免每次都重新下载语言包，二次识别快很多） */
+let ocrProgressCb = null;
+const ocrWorkers = {};
+async function ocrImage(file, lang) {
+  await loadTesseract();
+  let w = ocrWorkers[lang];
+  if (!w) {
+    w = await window.Tesseract.createWorker(lang, 1, {
+      logger: m => { if (ocrProgressCb) ocrProgressCb(m); }
+    });
+    ocrWorkers[lang] = w;
+  }
+  const { data } = await w.recognize(file);
+  return (data && data.text) ? data.text : '';
+}
+
+/* 大图先压到 1600px 长边，OCR 速度更快、精度的损失可忽略 */
+async function shrinkImage(file, maxSide = 1600) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    if (scale >= 1) return file;
+    const c = document.createElement('canvas');
+    c.width  = Math.round(bmp.width * scale);
+    c.height = Math.round(bmp.height * scale);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    return await new Promise(res => c.toBlob(b => res(b || file), 'image/jpeg', 0.92));
+  } catch (e) { return file; }
 }
 
 getEl('btnOcr').addEventListener('click', () => getEl('ocrInput').click());
@@ -825,27 +1017,18 @@ getEl('ocrInput').addEventListener('change', async e => {
 
   showProgress('正在加载识别引擎…\n首次使用需下载语言包，请稍候');
   try {
-    await loadTesseract();
-    updateProgress('正在初始化…');
-
-    const worker = await window.Tesseract.createWorker('chi_sim+eng', 1, {
-      logger: m => {
-        if (m.status === 'recognizing text') {
-          updateProgress('识别中… ' + Math.round((m.progress || 0) * 100) + '%');
-        } else if (m.status) {
-          updateProgress(m.status === 'loading language traineddata'
-            ? '正在下载语言包…' : m.status);
-        }
+    ocrProgressCb = m => {
+      if (m.status === 'recognizing text') {
+        updateProgress('识别中… ' + Math.round((m.progress || 0) * 100) + '%');
+      } else if (m.status) {
+        updateProgress(m.status === 'loading language traineddata'
+          ? '正在下载语言包…' : m.status);
       }
-    });
-
-    updateProgress('识别中…');
-    const { data } = await worker.recognize(file);
-    await worker.terminate();
-
+    };
+    const text = await ocrImage(await shrinkImage(file), 'chi_sim+eng');
+    ocrProgressCb = null;
     hideProgress();
 
-    const text = (data && data.text) ? data.text : '';
     if (!text.trim()) {
       toast('未识别到文字，请换一张更清晰的照片');
       return;
@@ -857,6 +1040,7 @@ getEl('ocrInput').addEventListener('change', async e => {
     toast(filled > 0 ? `识别完成，已自动填入 ${filled} 项` : '识别完成，请手动核对填写');
 
   } catch (err) {
+    ocrProgressCb = null;
     hideProgress();
     toast('识别失败：' + (err.message || err));
   }
@@ -890,6 +1074,11 @@ function fillFromText(raw) {
     const m = text.match(re);
     return m ? String(m[group]).trim() : '';
   };
+
+  // 包装标签：UPC 数字 → 69码；Serial No. → SN码
+  const ex = extractCodes(raw);
+  set('code69', ex.code69);
+  set('sn', ex.sn);
 
   // 购买方名称（第一处“名称：”）
   const name = pick(/名\s*称\s*[：:]\s*([^\n]{1,40})/);
