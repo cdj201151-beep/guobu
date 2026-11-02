@@ -621,8 +621,8 @@ async function scanLoop() {
   if (!scan.active) return;
   if (got) { handleCodes(got); return; }
 
-  // 连续 1.5 秒读不到条码 → 抓一帧改做文字识别（每轮扫码只试一次）
-  if (!scan.ocrTried && Date.now() - scan.startedAt > 1500) {
+  // 连续 3 秒读不到条码 → 抓一帧改做文字识别（每轮扫码只试一次）
+  if (!scan.ocrTried && Date.now() - scan.startedAt > 3000) {
     scan.ocrTried = true;
     tryAutoOcr();
     return;
