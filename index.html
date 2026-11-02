@@ -219,6 +219,7 @@
   <div class="scanner-top">
     <button class="icon-btn" id="scanClose">✕</button>
     <span id="scanTitle">扫描包装条码</span>
+
     <button class="icon-btn" id="scanTorch" hidden>⚡</button>
     <span style="width:40px"></span>
   </div>
@@ -494,7 +495,8 @@ const BARCODE_FORMATS = [
 const scan = {
   stream: null, detector: null, reader: null,
   timer: null, rvfcId: 0, target: null, active: false,
-  torchTrack: null, torchOn: false, startedAt: 0, ocrTried: false
+  torchTrack: null, torchOn: false, startedAt: 0, ocrTried: false,
+  textMode: false
 };
 
 function setTip(msg) { scanTipEl.textContent = msg; }
@@ -504,8 +506,12 @@ async function openScanner(targetId) {
   scan.active = true;
   scan.startedAt = Date.now();
   scan.ocrTried = false;
+  scan.textMode = (targetId === 'f-tradeNo');
   scannerEl.classList.add('show');
-  setTip('正在启动摄像头…');
+  getEl('scanTitle').textContent = scan.textMode ? '识别交易单号' : '扫描包装条码';
+  setTip(scan.textMode
+    ? '对准小票「银商订单号」的数字行\n只识别两个订单号之间的号码'
+    : '正在启动摄像头…');
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     setTip('当前浏览器不支持摄像头\n请点「拍照识别」选择图片');
@@ -532,6 +538,12 @@ async function openScanner(targetId) {
       getEl('scanTorch').hidden = !caps.torch;
       scan.torchOn = false;
     } catch (e) { scan.torchTrack = null; }
+
+    // 交易单号专用模式：不扫条码，走文字识别循环
+    if (scan.textMode) {
+      tradeNoOcrLoop();
+      return;
+    }
 
     await beginDecode();
   } catch (err) {
@@ -677,6 +689,78 @@ function cancelTick() {
   scan.rvfcId = 0;
 }
 
+/* ====== 交易单号专用识别：只取「银商订单号」与「外部订单号」之间的数字 ====== */
+function extractTradeNoText(raw) {
+  if (!raw) return '';
+  const lines = String(raw).split(/\n+/).map(l => l.replace(/[ \t\u3000]/g, ''));
+  const tailOf = l => l.replace(/^.*订单号/, '').replace(/^[：:]/, '');
+
+  let startIdx = -1;
+  // 优先「银商订单号」行（容忍 OCR 把银字认错：行内同时含 银/钅 与 订单号）
+  for (let i = 0; i < lines.length; i++) {
+    if (/订单号/.test(lines[i]) && !/外部/.test(lines[i]) && /银|钅/.test(lines[i])) { startIdx = i; break; }
+  }
+  if (startIdx < 0) {
+    // 兜底：普通「订单号」行，且同行尾巴必须是空或纯数字
+    // （排除「订单号 101032097160N」这类带字母的单号，它不是银商订单号）
+    for (let i = 0; i < lines.length; i++) {
+      if (/订单号/.test(lines[i]) && !/外部/.test(lines[i])) {
+        const tail = tailOf(lines[i]);
+        if (tail === '' || /^\d+$/.test(tail)) { startIdx = i; break; }
+      }
+    }
+  }
+  if (startIdx < 0) return '';
+
+  // 标签同一行冒号后的数字（写法：银商订单号：2026...）
+  let buf = (tailOf(lines[startIdx]).match(/\d/g) || []).join('');
+
+  // 终点：遇到「外部订单号」或任何其它标签行即停；连续数字行拼接，遇到非数字行结束
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/订单号|编号|终端|商户|批次|凭证|参考|卡号|金额|日期/.test(line)) break;
+    const digits = (line.match(/\d/g) || []).join('');
+    if (digits) buf += digits;
+    else if (buf) break;
+    if (buf.length >= 40) break;
+  }
+  return /^\d{10,40}$/.test(buf) ? buf : '';
+}
+
+let tradeNoBusy = false;
+async function tradeNoOcrLoop() {
+  if (!scan.active || !scan.textMode) return;
+  if (tradeNoBusy) return;
+  tradeNoBusy = true;
+  try {
+    const frame = grabFullFrame();
+    if (frame) {
+      const blob = await new Promise(res => frame.toBlob(res, 'image/jpeg', 0.92));
+      // 仅在首次下载语言包时提示，识别过程静默（避免提示闪烁）
+      ocrProgressCb = m => {
+        if (m.status === 'loading language traineddata') {
+          setTip('首次使用，正在下载中文识别包…');
+        }
+      };
+      const text = await ocrImage(blob, 'chi_sim+eng');
+      ocrProgressCb = null;
+      if (!scan.active) return;
+
+      const tno = extractTradeNoText(text);
+      if (tno) {
+        closeScanner();
+        setField('f-tradeNo', tno);
+        buzz(30);
+        toast('已识别交易单号：' + tno);
+        return;
+      }
+      setTip('未读到订单号，对准「银商订单号」数字行\n靠近拍摄更清晰');
+    }
+  } catch (e) { /* 单轮失败自动重试 */ }
+  tradeNoBusy = false;
+  if (scan.active) scan.timer = setTimeout(tradeNoOcrLoop, 700);
+}
+
 function setField(id, text) {
   const el = getEl(id);
   if (!el) return;
@@ -815,6 +899,8 @@ function handleCodes(codes) {
 
 function closeScanner() {
   scan.active = false;
+  scan.textMode = false;
+  tradeNoBusy = false;
   cancelTick();
 
   // 关闭闪光灯
@@ -928,6 +1014,37 @@ getEl('photoInput').addEventListener('change', async e => {
   const file = e.target.files && e.target.files[0];
   e.target.value = '';
   if (!file) return;
+
+  // 交易单号专用：拍照后直接读小票文字，只取「银商订单号」区域的数字
+  if (scan.target === 'f-tradeNo') {
+    setTip('正在识别小票上的订单号…');
+    try {
+      ocrProgressCb = m => {
+        if (m.status === 'recognizing text') {
+          setTip('识别中… ' + Math.round((m.progress || 0) * 100) + '%');
+        } else if (m.status === 'loading language traineddata') {
+          setTip('首次使用，正在下载中文识别包…');
+        }
+      };
+      const text = await ocrImage(await shrinkImage(file), 'chi_sim+eng');
+      ocrProgressCb = null;
+      const tno = extractTradeNoText(text);
+      if (tno && scan.active) {
+        closeScanner();
+        setField('f-tradeNo', tno);
+        buzz(30);
+        toast('已识别交易单号：' + tno);
+      } else {
+        setTip('未识别到订单号\n请让「银商订单号」到「外部订单号」之间完整入镜');
+        scan.active = true;
+      }
+    } catch (err) {
+      ocrProgressCb = null;
+      setTip('识别失败：' + (err.message || err) + '\n可再试一次或手动输入');
+      scan.active = true;
+    }
+    return;
+  }
 
   setTip('正在识别条码…');
   let codes = await decodeImageCodes(file);
