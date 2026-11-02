@@ -1,0 +1,935 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f2f2f7">
+<title>顾客信息采集</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0}
+  body{
+    background:#f2f2f7;color:#1c1c1e;
+    font:16px/1.45 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+    padding-bottom:calc(150px + env(safe-area-inset-bottom));
+    -webkit-text-size-adjust:100%;
+    overscroll-behavior-y:contain;
+  }
+  /* ---------- 顶部栏 ---------- */
+  .topbar{
+    position:sticky;top:0;z-index:50;
+    padding:calc(env(safe-area-inset-top) + 8px) 16px 10px;
+    background:rgba(242,242,247,.86);
+    backdrop-filter:saturate(180%) blur(20px);
+    -webkit-backdrop-filter:saturate(180%) blur(20px);
+    border-bottom:.5px solid #d6d6db;
+    display:flex;align-items:flex-end;justify-content:space-between;
+  }
+  .topbar h1{margin:0;font-size:20px;font-weight:700;letter-spacing:.01em}
+  .topbar .sub{font-size:12px;color:#8e8e93;margin-top:2px}
+  .topbar .clear-btn{
+    border:none;background:transparent;color:#ff3b30;font-size:15px;
+    padding:6px 4px;font-family:inherit;
+  }
+  /* ---------- 卡片 ---------- */
+  .card{
+    background:#fff;margin:12px;border-radius:14px;overflow:hidden;
+    box-shadow:0 1px 2px rgba(0,0,0,.05),0 0 0 .5px rgba(0,0,0,.03);
+  }
+  .card-hd{
+    padding:14px 16px 6px;font-size:13px;font-weight:600;color:#8e8e93;
+    letter-spacing:.02em;background:#fff;
+  }
+  .field{padding:8px 16px 10px}
+  .field + .field{border-top:.5px solid #ececf0}
+  .field label{display:block;font-size:13px;color:#6e6e73;font-weight:500;margin-bottom:2px}
+  .row{display:flex;align-items:center;gap:8px}
+  input,select,textarea{
+    flex:1;width:100%;min-width:0;border:none;background:transparent;
+    font-family:inherit;font-size:16px;color:#1c1c1e;
+    padding:7px 0;outline:none;border-radius:0;
+  }
+  input::placeholder,textarea::placeholder,select:invalid{color:#c4c4c9}
+  select{appearance:none;-webkit-appearance:none;min-height:36px}
+  textarea{resize:vertical;min-height:70px;line-height:1.5}
+  input[type=date]{min-height:36px;color:#1c1c1e}
+  input.err{color:#ff3b30;font-weight:600}
+  .scan-btn{
+    flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;
+    border:none;background:#eef4ff;color:#007aff;
+    font-size:14px;font-weight:600;font-family:inherit;
+    padding:8px 13px;border-radius:10px;transition:background .15s;
+  }
+  .scan-btn:active{background:#d8e6ff}
+  .scan-btn svg{width:15px;height:15px}
+  /* ---------- 底部操作栏 ---------- */
+  .actions{
+    position:fixed;left:0;right:0;bottom:0;z-index:60;
+    padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+    background:rgba(255,255,255,.93);
+    backdrop-filter:saturate(180%) blur(20px);
+    -webkit-backdrop-filter:saturate(180%) blur(20px);
+    border-top:.5px solid #d6d6db;
+    display:grid;grid-template-columns:1fr 1fr;gap:9px;
+  }
+  .btn{
+    border:none;border-radius:12px;padding:14px 8px;
+    font-family:inherit;font-size:15px;font-weight:600;
+    background:#f0f0f5;color:#1c1c1e;transition:transform .1s,opacity .1s;
+    display:flex;align-items:center;justify-content:center;gap:6px;
+  }
+  .btn:active{transform:scale(.97);opacity:.85}
+  .btn.primary{background:#007aff;color:#fff}
+  .btn.green{background:#34c759;color:#fff}
+  /* ---------- 扫码全屏 ---------- */
+  .scanner{position:fixed;inset:0;z-index:999;background:#000;display:none}
+  .scanner.show{display:block}
+  .scanner video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000}
+  .scan-frame{
+    position:absolute;left:50%;top:44%;transform:translate(-50%,-50%);
+    width:78%;max-width:340px;height:180px;border-radius:16px;
+    border:2px solid rgba(255,255,255,.92);
+    box-shadow:0 0 0 100vmax rgba(0,0,0,.45);
+    pointer-events:none;
+  }
+  .scan-frame::after{
+    content:'';position:absolute;left:6%;right:6%;top:50%;height:2px;
+    background:linear-gradient(90deg,transparent,#34c759,transparent);
+    animation:sweep 2s ease-in-out infinite;
+  }
+  @keyframes sweep{0%,100%{top:12%}50%{top:88%}}
+  .scanner-top{
+    position:absolute;top:0;left:0;right:0;z-index:2;
+    display:flex;align-items:center;justify-content:space-between;
+    padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;
+    color:#fff;font-size:15px;font-weight:600;
+    background:linear-gradient(rgba(0,0,0,.6),transparent);
+  }
+  .icon-btn{
+    width:40px;height:40px;border-radius:20px;border:none;
+    background:rgba(255,255,255,.18);color:#fff;font-size:17px;
+    display:flex;align-items:center;justify-content:center;font-family:inherit;
+  }
+  .scanner-bottom{
+    position:absolute;left:0;right:0;bottom:0;z-index:2;
+    padding:16px 16px calc(22px + env(safe-area-inset-bottom));
+    color:#fff;text-align:center;
+    background:linear-gradient(transparent,rgba(0,0,0,.7));
+  }
+  .scanner-bottom p{margin:0 0 14px;font-size:14px;opacity:.9;white-space:pre-line}
+  .scanner-btns{display:flex;gap:12px;justify-content:center}
+  .ghost-btn{
+    flex:1;max-width:170px;border:1.5px solid rgba(255,255,255,.6);
+    background:rgba(255,255,255,.12);color:#fff;
+    padding:13px 10px;border-radius:12px;font-size:15px;font-weight:600;
+    font-family:inherit;
+  }
+  .ghost-btn:active{background:rgba(255,255,255,.28)}
+  /* ---------- 进度遮罩 ---------- */
+  .progress{
+    position:fixed;inset:0;z-index:1000;display:none;
+    align-items:center;justify-content:center;background:rgba(0,0,0,.4);
+  }
+  .progress.show{display:flex}
+  .progress-box{
+    background:rgba(30,30,32,.92);color:#fff;border-radius:16px;
+    padding:26px 30px;min-width:210px;text-align:center;
+  }
+  .spinner{
+    width:34px;height:34px;margin:0 auto 14px;border-radius:50%;
+    border:3px solid rgba(255,255,255,.25);border-top-color:#fff;
+    animation:spin .9s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .progress-text{font-size:14px;line-height:1.5;white-space:pre-line}
+  /* ---------- 结果面板 ---------- */
+  .sheet{
+    position:fixed;left:0;right:0;bottom:0;z-index:900;
+    background:#fff;border-radius:18px 18px 0 0;
+    transform:translateY(105%);transition:transform .28s cubic-bezier(.32,.72,0,1);
+    padding-bottom:env(safe-area-inset-bottom);
+    max-height:82vh;display:flex;flex-direction:column;
+    box-shadow:0 -6px 30px rgba(0,0,0,.18);
+  }
+  .sheet.show{transform:translateY(0)}
+  .sheet-hd{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:14px 16px;border-bottom:.5px solid #ececf0;
+    font-weight:600;font-size:16px;
+  }
+  .sheet-hd button{
+    border:none;background:transparent;color:#007aff;font-size:15px;
+    font-family:inherit;font-weight:500;padding:4px;
+  }
+  .sheet textarea{
+    flex:1;margin:0;padding:14px 16px;border:none;outline:none;
+    font-size:14px;line-height:1.6;min-height:220px;background:#fff;
+    resize:none;color:#3a3a3c;
+  }
+  .sheet-ft{
+    display:grid;grid-template-columns:1fr 1fr;gap:9px;
+    padding:10px 14px 14px;border-top:.5px solid #ececf0;
+  }
+  /* ---------- Toast ---------- */
+  #toast{
+    position:fixed;left:50%;bottom:calc(160px + env(safe-area-inset-bottom));
+    transform:translate(-50%,12px);z-index:1200;
+    background:rgba(30,30,32,.93);color:#fff;
+    padding:11px 18px;border-radius:12px;font-size:14px;
+    opacity:0;pointer-events:none;transition:all .25s;
+    max-width:80vw;text-align:center;line-height:1.4;
+  }
+  #toast.show{opacity:1;transform:translate(-50%,0)}
+  .hint{
+    margin:12px 16px 0;font-size:12px;color:#9a9aa0;line-height:1.6;text-align:center;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <h1>顾客信息采集</h1>
+    <div class="sub">电子发票 · 移动通信设备</div>
+  </div>
+  <button class="clear-btn" id="btnClear">清空</button>
+</div>
+
+<form id="form" autocomplete="off"></form>
+
+<p class="hint">
+  提示：摄像头需在 HTTPS 环境下使用。<br>
+  69码 / SN 可直接扫码录入，也可拍照后自动识别文字。
+</p>
+
+<!-- 底部操作栏 -->
+<div class="actions">
+  <button type="button" class="btn" id="btnOcr">📷 拍照识别文字</button>
+  <button type="button" class="btn" id="btnCopy">📋 复制信息</button>
+  <button type="button" class="btn" id="btnExport">📤 导出 CSV</button>
+  <button type="button" class="btn primary" id="btnSave">💾 保存记录</button>
+</div>
+
+<!-- 扫码全屏 -->
+<div class="scanner" id="scanner">
+  <video id="video" playsinline muted autoplay></video>
+  <div class="scan-frame"></div>
+  <div class="scanner-top">
+    <button class="icon-btn" id="scanClose">✕</button>
+    <span id="scanTitle">扫描条码 / 二维码</span>
+    <span style="width:40px"></span>
+  </div>
+  <div class="scanner-bottom">
+    <p id="scanTip">正在启动摄像头…</p>
+    <div class="scanner-btns">
+      <button type="button" class="ghost-btn" id="scanPhoto">拍照识别</button>
+      <button type="button" class="ghost-btn" id="scanCancel">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 进度遮罩 -->
+<div class="progress" id="progress">
+  <div class="progress-box">
+    <div class="spinner"></div>
+    <div class="progress-text">处理中…</div>
+  </div>
+</div>
+
+<!-- 识别结果面板 -->
+<div class="sheet" id="ocrSheet">
+  <div class="sheet-hd">
+    <span>识别结果</span>
+    <button type="button" id="ocrClose">关闭</button>
+  </div>
+  <textarea id="ocrText" readonly></textarea>
+  <div class="sheet-ft">
+    <button type="button" class="btn" id="ocrCopy">复制文字</button>
+    <button type="button" class="btn primary" id="ocrFill">填入表单</button>
+  </div>
+</div>
+
+<input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
+<input type="file" id="ocrInput" accept="image/*" capture="environment" hidden>
+<div id="toast"></div>
+
+<script>
+/* ============================================================
+   1. 字段配置（依据电子发票内容整理）
+   ============================================================ */
+const GROUPS = [
+  {
+    title: '购买方信息',
+    fields: [
+      { id:'name',    label:'购买方名称', ph:'请输入姓名', scan:true },
+      { id:'taxNo',   label:'统一社会信用代码 / 纳税人识别号', ph:'请输入 18 位代码', scan:true },
+      { id:'address', label:'购买方地址', ph:'xx省xx市xx区/县xx街道xx小区xx号楼xx单元xxx室（自提商品需填写消费者提供的家庭地址）' },
+      { id:'phone',   label:'购买方电话', ph:'请输入手机号', type:'tel', inputmode:'tel', scan:true }
+    ]
+  },
+  {
+    title: '商品信息',
+    fields: [
+      { id:'hostType', label:'主机类型', type:'select',
+        options:['Mac', 'iPad', 'iPhone', 'watch'],
+        ph:'请选择主机类型' },
+      { id:'code69', label:'69码', ph:'扫码或手动输入', inputmode:'numeric', scan:true },
+      { id:'sn',     label:'SN码', ph:'扫码或手动输入', scan:true }
+    ]
+  },
+  {
+    title: '发票信息',
+    fields: [
+      { id:'total',       label:'价税合计（元）', ph:'0.00', inputmode:'decimal' },
+      { id:'paid',        label:'实付金额（元）', ph:'自动计算（价税合计 − 补贴金额）', readonly:true },
+      { id:'subsidy',     label:'补贴金额（元）', ph:'自动计算（价税合计 × 15%，按主机类型封顶）', readonly:true },
+      { id:'buyDate',     label:'购买日期', ph:'', type:'date', def:'today' },
+      { id:'payChannel',  label:'支付渠道', ph:'云闪付 / 微信 / 支付宝', def:'云闪付' },
+      { id:'tradeNo',     label:'交易单号', ph:'扫码或手动输入', inputmode:'numeric', scan:true }
+    ]
+  },
+  {
+    title: '备注',
+    fields: [
+      { id:'remark', label:'备注', ph:'其他需要说明的信息', type:'textarea' }
+    ]
+  }
+];
+const ALL_FIELDS = GROUPS.flatMap(g => g.fields);
+
+/* ============================================================
+   2. 渲染表单
+   ============================================================ */
+const formEl = document.getElementById('form');
+
+const SCAN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M3 8V5a2 2 0 0 1 2-2h3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M21 16v3a2 2 0 0 1-2 2h-3M3 12h18"/></svg>';
+
+GROUPS.forEach(group => {
+  const card = document.createElement('section');
+  card.className = 'card';
+
+  const hd = document.createElement('div');
+  hd.className = 'card-hd';
+  hd.textContent = group.title;
+  card.appendChild(hd);
+
+  group.fields.forEach(f => {
+    const field = document.createElement('div');
+    field.className = 'field';
+
+    if (f.type === 'select') {
+      const opts = ['<option value="" disabled' + (f.def ? '' : ' selected') + '>请选择</option>']
+        .concat((f.options || []).map(o =>
+          `<option value="${o}"${f.def === o ? ' selected' : ''}>${o}</option>`))
+        .join('');
+      field.innerHTML = `
+        <label for="f-${f.id}">${f.label}</label>
+        <select id="f-${f.id}" autocomplete="off" required>${opts}</select>`;
+    } else if (f.type === 'textarea') {
+      field.innerHTML = `
+        <label for="f-${f.id}">${f.label}</label>
+        <textarea id="f-${f.id}" rows="3" placeholder="${f.ph || ''}"></textarea>`;
+    } else {
+      const inputmode = f.inputmode ? ` inputmode="${f.inputmode}"` : '';
+      const type = f.type || 'text';
+      const readonly = f.readonly ? ' readonly tabindex="-1"' : '';
+      field.innerHTML = `
+        <label for="f-${f.id}">${f.label}</label>
+        <div class="row">
+          <input id="f-${f.id}" type="${type}"${inputmode}${readonly}
+                 placeholder="${f.ph || ''}" autocomplete="off"
+                 autocapitalize="off" autocorrect="off" spellcheck="false">
+          ${f.scan ? `<button type="button" class="scan-btn" data-scan="f-${f.id}">${SCAN_ICON}扫</button>` : ''}
+        </div>`;
+    }
+    card.appendChild(field);
+
+    // 默认值：购买日期取当天，支付渠道默认云闪付
+    if (f.def) {
+      const el = field.querySelector('input,textarea');
+      if (el) el.value = (f.def === 'today') ? todayStr() : f.def;
+    }
+  });
+
+  formEl.appendChild(card);
+});
+
+/* ============================================================
+   3. 工具函数
+   ============================================================ */
+const $ = s => document.querySelector(s);
+const getEl = id => document.getElementById(id);
+
+function toast(msg, ms = 2200) {
+  const t = getEl('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove('show'), ms);
+}
+function showProgress(msg) {
+  getEl('progress').querySelector('.progress-text').textContent = msg;
+  getEl('progress').classList.add('show');
+}
+function updateProgress(msg) {
+  getEl('progress').querySelector('.progress-text').textContent = msg;
+}
+function hideProgress() { getEl('progress').classList.remove('show'); }
+function buzz(p = 18) { if (navigator.vibrate) navigator.vibrate(p); }
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+/* 本地当天日期 YYYY-MM-DD */
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/* 恢复默认值（清空后调用） */
+function applyDefaults() {
+  ALL_FIELDS.forEach(f => {
+    if (!f.def) return;
+    const el = getEl('f-' + f.id);
+    if (el) el.value = (f.def === 'today') ? todayStr() : f.def;
+  });
+}
+
+/* ============================================================
+   补贴规则：补贴 = 价税合计 × 15%（封顶）；实付 = 价税合计 − 补贴
+   iPhone / iPad / watch（3C）：价税合计 ≤ 6000 元，补贴封顶 500 元
+   Mac（家电）：补贴封顶 1500 元
+   ============================================================ */
+const HOST_RULES = {
+  'iPhone': { maxTotal: 6000, cap: 500 },
+  'iPad':   { maxTotal: 6000, cap: 500 },
+  'watch':  { maxTotal: 6000, cap: 500 },
+  'Mac':    { cap: 1500 }
+};
+
+function round2(n) { return Math.round(n * 100) / 100; }
+
+function calcSubsidy(silent) {
+  const typeEl  = getEl('f-hostType');
+  const totalEl = getEl('f-total');
+  const paidEl  = getEl('f-paid');
+  const subEl   = getEl('f-subsidy');
+  if (!typeEl || !totalEl || !paidEl || !subEl) return;
+
+  paidEl.value = '';
+  subEl.value = '';
+  totalEl.classList.remove('err');
+
+  const type  = typeEl.value || '';
+  const total = parseFloat(String(totalEl.value).replace(/,/g, ''));
+  if (!type || !(total > 0)) return;
+
+  const rules = HOST_RULES[type];
+  if (rules && rules.maxTotal && total > rules.maxTotal) {
+    totalEl.classList.add('err');
+    if (!silent) toast(`该主机类型价税合计不能超过 ${rules.maxTotal} 元`);
+    return;
+  }
+
+  const subsidy = rules ? Math.min(round2(total * 0.15), rules.cap) : round2(total * 0.15);
+  subEl.value  = subsidy.toFixed(2);
+  paidEl.value = round2(total - subsidy).toFixed(2);
+}
+
+function collect() {
+  const o = {};
+  ALL_FIELDS.forEach(f => {
+    const el = getEl('f-' + f.id);
+    o[f.id] = el ? el.value.trim() : '';
+  });
+  return o;
+}
+
+/* ============================================================
+   4. 本地暂存（自动保存草稿）
+   ============================================================ */
+const DRAFT_KEY = 'dzfp_draft_v1';
+
+(function restoreDraft() {
+  try {
+    const o = JSON.parse(localStorage.getItem(DRAFT_KEY) || '{}');
+    Object.keys(o).forEach(k => {
+      const el = getEl('f-' + k);
+      if (el && o[k]) el.value = o[k];
+    });
+  } catch (e) { /* ignore */ }
+})();
+
+calcSubsidy(true);   // 草稿恢复后按规则重算实付 / 补贴
+
+let draftTimer;
+document.addEventListener('input', e => {
+  if (!e.target.closest('#form')) return;
+  // 价税合计变动 → 实时重算（超上限仅标红，不打断输入）
+  if (e.target.id === 'f-total') { calcSubsidy(true); }
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    try { localStorage.setItem(DRAFT_KEY, JSON.stringify(collect())); } catch (e) {}
+  }, 400);
+});
+
+// 切换主机类型 → 重算（超上限时给出提示）
+document.addEventListener('change', e => {
+  if (e.target.id === 'f-hostType') calcSubsidy(false);
+});
+
+/* ============================================================
+   5. 扫码（BarcodeDetector 优先，ZXing 兜底）
+   ============================================================ */
+const scannerEl = getEl('scanner');
+const videoEl   = getEl('video');
+const scanTipEl = getEl('scanTip');
+
+const BARCODE_FORMATS = [
+  'ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93',
+  'itf','codabar','qr_code','data_matrix','pdf417'
+];
+
+const scan = {
+  stream: null, detector: null, reader: null,
+  timer: null, target: null, active: false
+};
+
+function setTip(msg) { scanTipEl.textContent = msg; }
+
+async function openScanner(targetId) {
+  scan.target = targetId;
+  scan.active = true;
+  scannerEl.classList.add('show');
+  setTip('正在启动摄像头…');
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setTip('当前浏览器不支持摄像头\n请点「拍照识别」选择图片');
+    scan.active = false;
+    return;
+  }
+
+  try {
+    scan.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false
+    });
+    videoEl.srcObject = scan.stream;
+    await videoEl.play().catch(() => {});
+    await beginDecode();
+  } catch (err) {
+    scan.active = false;
+    setTip('无法打开摄像头：' + (err.message || err) + '\n可点「拍照识别」选择图片');
+  }
+}
+
+async function beginDecode() {
+  // 方案 A：原生 BarcodeDetector
+  if ('BarcodeDetector' in window) {
+    try {
+      scan.detector = new BarcodeDetector({ formats: BARCODE_FORMATS });
+      setTip('将条码 / 二维码对准取景框');
+      tick();
+      return;
+    } catch (e) { /* 继续降级 */ }
+  }
+
+  // 方案 B：ZXing
+  try {
+    await loadZXing();
+    const Z = window.ZXing;
+    const hints = new Map();
+    hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [
+      Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8,
+      Z.BarcodeFormat.UPC_A,  Z.BarcodeFormat.UPC_E,
+      Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.CODE_39,
+      Z.BarcodeFormat.CODE_93,  Z.BarcodeFormat.ITF,
+      Z.BarcodeFormat.CODABAR,  Z.BarcodeFormat.QR_CODE,
+      Z.BarcodeFormat.DATA_MATRIX, Z.BarcodeFormat.PDF_417
+    ]);
+    hints.set(Z.DecodeHintType.TRY_HARDER, true);
+
+    scan.reader = new Z.BrowserMultiFormatReader(hints, {
+      delayBetweenScanAttempts: 200,
+      delayBetweenScanSuccess: 600
+    });
+    setTip('将条码 / 二维码对准取景框');
+    scan.reader.decodeFromStream(scan.stream, videoEl, (result) => {
+      if (result && scan.active) onScanned(result.getText());
+    });
+  } catch (e) {
+    setTip('条码识别组件加载失败\n请检查网络，或使用「拍照识别」');
+  }
+}
+
+async function tick() {
+  if (!scan.active || !scan.detector) return;
+  try {
+    if (videoEl.readyState >= 2) {
+      const codes = await scan.detector.detect(videoEl);
+      if (codes && codes.length && scan.active) {
+        onScanned(codes[0].rawValue);
+        return;
+      }
+    }
+  } catch (e) { /* 忽略单帧错误 */ }
+  scan.timer = setTimeout(tick, 200);
+}
+
+function onScanned(text) {
+  if (!text) return;
+  const targetId = scan.target;
+  closeScanner();
+
+  const el = getEl(targetId);
+  if (el) {
+    el.value = text;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  buzz(30);
+  toast('已识别：' + (text.length > 28 ? text.slice(0, 28) + '…' : text));
+}
+
+function closeScanner() {
+  scan.active = false;
+  clearTimeout(scan.timer);
+
+  if (scan.reader) {
+    try { scan.reader.reset(); } catch (e) {}
+    scan.reader = null;
+  }
+  scan.detector = null;
+
+  if (scan.stream) {
+    scan.stream.getTracks().forEach(t => t.stop());
+    scan.stream = null;
+  }
+  videoEl.srcObject = null;
+  scannerEl.classList.remove('show');
+}
+
+/* 扫码按钮事件委托 */
+document.addEventListener('click', e => {
+  const btn = e.target.closest('[data-scan]');
+  if (btn) {
+    e.preventDefault();
+    openScanner(btn.dataset.scan);
+  }
+});
+
+getEl('scanClose').addEventListener('click', closeScanner);
+getEl('scanCancel').addEventListener('click', closeScanner);
+getEl('scanPhoto').addEventListener('click', () => getEl('photoInput').click());
+
+/* ZXing 懒加载 */
+let zxingPromise = null;
+function loadZXing() {
+  if (window.ZXing) return Promise.resolve();
+  if (zxingPromise) return zxingPromise;
+  zxingPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+    s.onload = resolve;
+    s.onerror = () => { zxingPromise = null; reject(new Error('ZXing 加载失败')); };
+    document.head.appendChild(s);
+  });
+  return zxingPromise;
+}
+
+/* ============================================================
+   6. 拍照 / 相册 识别条码
+   ============================================================ */
+async function decodeImageFile(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    // 优先原生 API
+    if ('BarcodeDetector' in window) {
+      try {
+        const bmp = await createImageBitmap(file);
+        const det = new BarcodeDetector({ formats: BARCODE_FORMATS });
+        const codes = await det.detect(bmp);
+        if (codes && codes.length) return codes[0].rawValue;
+      } catch (e) { /* 降级 */ }
+    }
+    // ZXing 兜底
+    await loadZXing();
+    const reader = new window.ZXing.BrowserMultiFormatReader();
+    const res = await reader.decodeFromImageUrl(url);
+    return res && res.getText ? res.getText() : null;
+  } catch (e) {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+getEl('photoInput').addEventListener('change', async e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+
+  setTip('正在识别图片中的条码…');
+  const code = await decodeImageFile(file);
+
+  if (code) {
+    onScanned(code);
+  } else {
+    setTip('未识别到条码\n请让条码更清晰、占画面更大后重试');
+    scan.active = true; // 保持可再次选择
+  }
+});
+
+/* ============================================================
+   7. OCR 文字识别（Tesseract.js）
+   ============================================================ */
+let tesseractPromise = null;
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve();
+  if (tesseractPromise) return tesseractPromise;
+  tesseractPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+    s.onload = resolve;
+    s.onerror = () => { tesseractPromise = null; reject(new Error('OCR 组件加载失败')); };
+    document.head.appendChild(s);
+  });
+  return tesseractPromise;
+}
+
+getEl('btnOcr').addEventListener('click', () => getEl('ocrInput').click());
+
+getEl('ocrInput').addEventListener('change', async e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+
+  showProgress('正在加载识别引擎…\n首次使用需下载语言包，请稍候');
+  try {
+    await loadTesseract();
+    updateProgress('正在初始化…');
+
+    const worker = await window.Tesseract.createWorker('chi_sim+eng', 1, {
+      logger: m => {
+        if (m.status === 'recognizing text') {
+          updateProgress('识别中… ' + Math.round((m.progress || 0) * 100) + '%');
+        } else if (m.status) {
+          updateProgress(m.status === 'loading language traineddata'
+            ? '正在下载语言包…' : m.status);
+        }
+      }
+    });
+
+    updateProgress('识别中…');
+    const { data } = await worker.recognize(file);
+    await worker.terminate();
+
+    hideProgress();
+
+    const text = (data && data.text) ? data.text : '';
+    if (!text.trim()) {
+      toast('未识别到文字，请换一张更清晰的照片');
+      return;
+    }
+
+    getEl('ocrText').value = text;
+    const filled = fillFromText(text);
+    getEl('ocrSheet').classList.add('show');
+    toast(filled > 0 ? `识别完成，已自动填入 ${filled} 项` : '识别完成，请手动核对填写');
+
+  } catch (err) {
+    hideProgress();
+    toast('识别失败：' + (err.message || err));
+  }
+});
+
+getEl('ocrClose').addEventListener('click', () => getEl('ocrSheet').classList.remove('show'));
+getEl('ocrFill').addEventListener('click', () => {
+  const n = fillFromText(getEl('ocrText').value);
+  getEl('ocrSheet').classList.remove('show');
+  toast(n > 0 ? `已填入 ${n} 项信息` : '未匹配到可填入的字段');
+});
+getEl('ocrCopy').addEventListener('click', () => {
+  copyText(getEl('ocrText').value);
+});
+
+/* ---- 从 OCR 文本中提取字段 ---- */
+function fillFromText(raw) {
+  if (!raw) return 0;
+  const text = raw.replace(/[ \t\u3000]+/g, ' ').replace(/[＊*]/g, '');
+  let count = 0;
+
+  const set = (id, val) => {
+    if (!val) return;
+    const el = getEl('f-' + id);
+    if (!el) return;
+    el.value = val;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    count++;
+  };
+  const pick = (re, group = 1) => {
+    const m = text.match(re);
+    return m ? String(m[group]).trim() : '';
+  };
+
+  // 购买方名称（第一处“名称：”）
+  const name = pick(/名\s*称\s*[：:]\s*([^\n]{1,40})/);
+  if (name && name.length <= 40) set('name', name.replace(/[（(].*?[）)]/g, '').trim());
+
+  // 统一社会信用代码 / 纳税人识别号
+  set('taxNo', pick(/(?:统一社会信用代码|纳税人识别号)[^\n]{0,14}[：:]\s*([0-9A-Za-z]{15,20})/));
+
+  // 地址 / 电话
+  set('address', pick(/购买方地址\s*[：:]\s*([^\n]{4,80})/));
+  set('phone', pick(/(?:购买方电话\s*[：:]\s*)?(1[3-9]\d{9})/));
+
+  // 69 码 / SN
+  set('code69', pick(/69\s*码\s*[：:]\s*(\d{8,14})/));
+  set('sn', pick(/S\s*N\s*[：:]\s*([A-Za-z0-9]{6,24})/));
+
+  // 价税合计（小写）——填入后触发实付 / 补贴自动重算
+  set('total', pick(/[（(]\s*小写\s*[）)]\s*[¥￥]?\s*([\d,]+\.\d{2})/));
+
+  // 购买日期
+  let m = text.match(/购买日期\s*[：:]\s*(\d{4})\s*[年\-\/.]\s*(\d{1,2})\s*[月\-\/.]\s*(\d{1,2})/);
+  if (m) set('buyDate', `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`);
+
+  // 支付渠道
+  set('payChannel', pick(/支付渠道\s*[：:]\s*([^\s；;，,。\n]{2,12})/));
+
+  // 交易单号
+  set('tradeNo', pick(/交易单号\s*[：:]\s*(\d{10,})/));
+
+  return count;
+}
+
+/* ============================================================
+   8. 复制 / 保存 / 导出
+   ============================================================ */
+function copyText(text) {
+  if (!text) { toast('没有可复制的内容'); return; }
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text)
+      .then(() => toast('已复制到剪贴板'))
+      .catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); toast('已复制到剪贴板'); }
+  catch (e) { toast('复制失败，请长按手动选择'); }
+  document.body.removeChild(ta);
+}
+
+getEl('btnCopy').addEventListener('click', () => {
+  const d = collect();
+  const lines = ALL_FIELDS
+    .filter(f => d[f.id])
+    .map(f => `${f.label}：${d[f.id]}`);
+  if (!lines.length) { toast('还没有填写内容'); return; }
+  copyText(lines.join('\n'));
+});
+
+const RECORD_KEY = 'dzfp_records_v1';
+function loadRecords() {
+  try { return JSON.parse(localStorage.getItem(RECORD_KEY) || '[]'); }
+  catch (e) { return []; }
+}
+function saveRecords(list) {
+  try { localStorage.setItem(RECORD_KEY, JSON.stringify(list)); } catch (e) {}
+}
+
+getEl('btnSave').addEventListener('click', () => {
+  const d = collect();
+  if (!d.name) { toast('请至少填写「购买方名称」'); getEl('f-name').focus(); return; }
+  if (!d.hostType) { toast('请选择主机类型'); getEl('f-hostType').focus(); return; }
+  const total = parseFloat(String(d.total).replace(/,/g, ''));
+  if (!(total > 0)) { toast('请填写价税合计'); getEl('f-total').focus(); return; }
+  const rules = HOST_RULES[d.hostType];
+  if (rules && rules.maxTotal && total > rules.maxTotal) {
+    toast(`该主机类型价税合计不能超过 ${rules.maxTotal} 元`);
+    getEl('f-total').focus();
+    return;
+  }
+  calcSubsidy(true);   // 保存前确保实付 / 补贴已按规则算好
+  const list = loadRecords();
+  d._savedAt = new Date().toLocaleString('zh-CN');
+  list.push(d);
+  saveRecords(list);
+  buzz(25);
+  toast(`已保存，当前共 ${list.length} 条记录`);
+});
+
+getEl('btnExport').addEventListener('click', () => {
+  const list = loadRecords();
+  if (!list.length) { toast('还没有保存的记录'); return; }
+
+  const keys = ALL_FIELDS.map(f => f.id);
+  const cols = ALL_FIELDS.map(f => f.label).concat(['保存时间']);
+  const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+
+  const rows = [cols.map(esc).join(',')];
+  list.forEach(r => {
+    rows.push(keys.map(k => esc(r[k])).concat(esc(r._savedAt || '')).join(','));
+  });
+
+  const blob = new Blob(['\ufeff' + rows.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `顾客信息_${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  toast(`已导出 ${list.length} 条记录`);
+});
+
+getEl('btnClear').addEventListener('click', () => {
+  if (!confirm('确定清空当前表单内容吗？（已保存的记录不受影响）')) return;
+  ALL_FIELDS.forEach(f => {
+    const el = getEl('f-' + f.id);
+    if (el) el.value = '';
+  });
+  applyDefaults();   // 购买日期回到当天、支付渠道回到云闪付
+  calcSubsidy(true); // 清掉实付 / 补贴与超标标红
+  localStorage.removeItem(DRAFT_KEY);
+  toast('已清空');
+});
+
+/* ============================================================
+   9. 细节处理
+   ============================================================ */
+// 点击空白处收起键盘
+document.addEventListener('touchstart', e => {
+  if (e.target === document.body) document.activeElement && document.activeElement.blur();
+}, { passive: true });
+
+// 扫码页面打开时禁止背景滚动
+const observer = new MutationObserver(() => {
+  const open = scannerEl.classList.contains('show');
+  document.body.style.overflow = open ? 'hidden' : '';
+});
+observer.observe(scannerEl, { attributes: true, attributeFilter: ['class'] });
+
+// 跨天回到前台时，若购买日期未被手动改过，自动更新为当天
+let autoDate = (getEl('f-buyDate') || {}).value || todayStr();
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  const el = getEl('f-buyDate');
+  if (!el) return;
+  const today = todayStr();
+  if (today === autoDate) return;
+  if (el.value === autoDate || !el.value) {
+    el.value = today;
+    autoDate = today;
+  }
+});
+</script>
+</body>
+</html>
