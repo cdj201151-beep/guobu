@@ -621,8 +621,8 @@ async function scanLoop() {
   if (!scan.active) return;
   if (got) { handleCodes(got); return; }
 
-  // 连续 3 秒读不到条码 → 抓一帧改做文字识别（每轮扫码只试一次）
-  if (!scan.ocrTried && Date.now() - scan.startedAt > 3000) {
+  // 连续 1.5 秒读不到条码 → 抓一帧改做文字识别（每轮扫码只试一次）
+  if (!scan.ocrTried && Date.now() - scan.startedAt > 1500) {
     scan.ocrTried = true;
     tryAutoOcr();
     return;
@@ -666,7 +666,7 @@ async function tryAutoOcr() {
     setTip('没读到条码，也未能识别文字\n请点「拍照识别」，让条码和数字占满画面');
   } catch (e) {
     ocrProgressCb = null;
-    if (scan.active) setTip('条码识别失败\n可点「拍照识别」靠近拍一张');
+    if (scan.active) setTip((e && e.message ? e.message : '条码识别失败') + '\n可点「拍照识别」靠近拍一张');
   }
   if (scan.active) scanLoop();
 }
@@ -863,13 +863,7 @@ getEl('scanTorch').addEventListener('click', async () => {
   } catch (e) { toast('闪光灯打开失败'); }
 });
 
-/* 内置引擎路径（与页面同源，放在仓库 vendor/ 下）
-   本地优先、CDN 兜底；用绝对地址以便页面放在任意子路径下都能找到 */
-function V(path) {
-  try { return new URL('vendor/' + path, location.href).href; } catch (e) { return 'vendor/' + path; }
-}
-
-/* 多 CDN 依次尝试加载脚本（本地文件缺失或损坏时回退） */
+/* 多 CDN 依次尝试加载脚本（单个 CDN 不通时自动换源） */
 function loadScript(urls) {
   return new Promise((resolve, reject) => {
     let i = 0;
@@ -891,7 +885,6 @@ function loadZXing() {
   if (window.ZXing) return Promise.resolve();
   if (zxingPromise) return zxingPromise;
   zxingPromise = loadScript([
-    V('zxing.min.js'),
     'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js',
     'https://fastly.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js',
     'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js'
@@ -977,7 +970,6 @@ function loadTesseract() {
   if (window.Tesseract) return Promise.resolve();
   if (tesseractPromise) return tesseractPromise;
   tesseractPromise = loadScript([
-    V('tesseract/tesseract.min.js'),
     'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
     'https://fastly.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
     'https://unpkg.com/tesseract.js@5.1.1/dist/tesseract.min.js'
@@ -993,23 +985,25 @@ async function ocrImage(file, lang) {
   let w = ocrWorkers[lang];
   if (!w) {
     const logger = m => { if (ocrProgressCb) ocrProgressCb(m); };
-    try {
-      // 本地内置：worker、wasm 核心、语言包都在本站
-      w = await window.Tesseract.createWorker(lang, 1, {
-        workerPath: V('tesseract/worker.min.js'),
-        corePath:   V('tesseract'),
-        langPath:   V('lang'),
-        gzip: true,
-        logger
-      });
-    } catch (e) {
-      // 本地文件异常时回退 CDN
-      w = await window.Tesseract.createWorker(lang, 1, { logger });
-    }
+    // 语言包走 CDN；超过 60 秒仍未就绪则中止，避免一直卡在「下载语言包」
+    w = await withTimeout(
+      window.Tesseract.createWorker(lang, 1, { logger }),
+      60000,
+      '语言包下载超时，请检查网络后重试'
+    );
     ocrWorkers[lang] = w;
   }
   const { data } = await w.recognize(file);
   return (data && data.text) ? data.text : '';
+}
+
+/* Promise 超时保护 */
+function withTimeout(promise, ms, msg) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(msg)), ms);
+    promise.then(v => { clearTimeout(t); resolve(v); },
+                 e => { clearTimeout(t); reject(e); });
+  });
 }
 
 /* 大图先压到 1600px 长边，OCR 速度更快、精度的损失可忽略 */
