@@ -621,8 +621,8 @@ async function scanLoop() {
   if (!scan.active) return;
   if (got) { handleCodes(got); return; }
 
-  // 连续 6 秒读不到条码 → 抓一帧改做文字识别（每轮扫码只试一次）
-  if (!scan.ocrTried && Date.now() - scan.startedAt > 6000) {
+  // 连续 3 秒读不到条码 → 抓一帧改做文字识别（每轮扫码只试一次）
+  if (!scan.ocrTried && Date.now() - scan.startedAt > 3000) {
     scan.ocrTried = true;
     tryAutoOcr();
     return;
@@ -863,7 +863,13 @@ getEl('scanTorch').addEventListener('click', async () => {
   } catch (e) { toast('闪光灯打开失败'); }
 });
 
-/* 多 CDN 依次尝试加载脚本（国内 jsdelivr 偶发不通时的兜底） */
+/* 内置引擎路径（与页面同源，放在仓库 vendor/ 下）
+   本地优先、CDN 兜底；用绝对地址以便页面放在任意子路径下都能找到 */
+function V(path) {
+  try { return new URL('vendor/' + path, location.href).href; } catch (e) { return 'vendor/' + path; }
+}
+
+/* 多 CDN 依次尝试加载脚本（本地文件缺失或损坏时回退） */
 function loadScript(urls) {
   return new Promise((resolve, reject) => {
     let i = 0;
@@ -885,10 +891,10 @@ function loadZXing() {
   if (window.ZXing) return Promise.resolve();
   if (zxingPromise) return zxingPromise;
   zxingPromise = loadScript([
+    V('zxing.min.js'),
     'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js',
     'https://fastly.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js',
-    'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js',
-    'https://cdn.staticfile.net/zxing/0.21.3/index.min.js'
+    'https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js'
   ]).catch(err => { zxingPromise = null; throw err; });
   return zxingPromise;
 }
@@ -971,6 +977,7 @@ function loadTesseract() {
   if (window.Tesseract) return Promise.resolve();
   if (tesseractPromise) return tesseractPromise;
   tesseractPromise = loadScript([
+    V('tesseract/tesseract.min.js'),
     'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
     'https://fastly.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
     'https://unpkg.com/tesseract.js@5.1.1/dist/tesseract.min.js'
@@ -985,9 +992,20 @@ async function ocrImage(file, lang) {
   await loadTesseract();
   let w = ocrWorkers[lang];
   if (!w) {
-    w = await window.Tesseract.createWorker(lang, 1, {
-      logger: m => { if (ocrProgressCb) ocrProgressCb(m); }
-    });
+    const logger = m => { if (ocrProgressCb) ocrProgressCb(m); };
+    try {
+      // 本地内置：worker、wasm 核心、语言包都在本站
+      w = await window.Tesseract.createWorker(lang, 1, {
+        workerPath: V('tesseract/worker.min.js'),
+        corePath:   V('tesseract'),
+        langPath:   V('lang'),
+        gzip: true,
+        logger
+      });
+    } catch (e) {
+      // 本地文件异常时回退 CDN
+      w = await window.Tesseract.createWorker(lang, 1, { logger });
+    }
     ocrWorkers[lang] = w;
   }
   const { data } = await w.recognize(file);
