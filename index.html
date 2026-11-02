@@ -201,7 +201,7 @@
 
 <p class="hint">
   提示：摄像头需在 HTTPS 环境下使用。<br>
-  69码 / SN 可直接扫码录入，也可拍照后自动识别文字。
+  扫一次可同时识别 UPC（69码）与 Serial No.（SN码），也可拍照后自动识别。
 </p>
 
 <!-- 底部操作栏 -->
@@ -218,7 +218,8 @@
   <div class="scan-frame"></div>
   <div class="scanner-top">
     <button class="icon-btn" id="scanClose">✕</button>
-    <span id="scanTitle">扫描条码 / 二维码</span>
+    <span id="scanTitle">扫描包装条码</span>
+    <button class="icon-btn" id="scanTorch" hidden>⚡</button>
     <span style="width:40px"></span>
   </div>
   <div class="scanner-bottom">
@@ -275,8 +276,8 @@ const GROUPS = [
       { id:'hostType', label:'主机类型', type:'select',
         options:['Mac', 'iPad', 'iPhone', 'watch'],
         ph:'请选择主机类型' },
-      { id:'code69', label:'69码', ph:'扫码或手动输入', inputmode:'numeric', scan:true },
-      { id:'sn',     label:'SN码', ph:'扫码或手动输入', scan:true }
+      { id:'code69', label:'69码（包装 UPC 条码）', ph:'扫码或手动输入', inputmode:'numeric', scan:true },
+      { id:'sn',     label:'SN码（包装 Serial No. 条码）', ph:'扫码或手动输入', scan:true }
     ]
   },
   {
@@ -492,7 +493,8 @@ const BARCODE_FORMATS = [
 
 const scan = {
   stream: null, detector: null, reader: null,
-  timer: null, target: null, active: false
+  timer: null, rvfcId: 0, target: null, active: false,
+  torchTrack: null, torchOn: false
 };
 
 function setTip(msg) { scanTipEl.textContent = msg; }
@@ -516,6 +518,19 @@ async function openScanner(targetId) {
     });
     videoEl.srcObject = scan.stream;
     await videoEl.play().catch(() => {});
+
+    // 连续自动对焦 + 闪光灯按钮（设备支持时）
+    try {
+      const track = scan.stream.getVideoTracks()[0];
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.focusMode && caps.focusMode.includes('continuous')) {
+        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+      }
+      scan.torchTrack = caps.torch ? track : null;
+      getEl('scanTorch').hidden = !caps.torch;
+      scan.torchOn = false;
+    } catch (e) { scan.torchTrack = null; }
+
     await beginDecode();
   } catch (err) {
     scan.active = false;
@@ -528,8 +543,8 @@ async function beginDecode() {
   if ('BarcodeDetector' in window) {
     try {
       scan.detector = new BarcodeDetector({ formats: BARCODE_FORMATS });
-      setTip('将条码 / 二维码对准取景框');
-      tick();
+      setTip('将包装条码对准取景框\nUPC 和 Serial No. 可一次同时识别');
+      scheduleTick();
       return;
     } catch (e) { /* 继续降级 */ }
   }
@@ -550,12 +565,14 @@ async function beginDecode() {
     hints.set(Z.DecodeHintType.TRY_HARDER, true);
 
     scan.reader = new Z.BrowserMultiFormatReader(hints, {
-      delayBetweenScanAttempts: 200,
-      delayBetweenScanSuccess: 600
+      delayBetweenScanAttempts: 60,
+      delayBetweenScanSuccess: 500
     });
-    setTip('将条码 / 二维码对准取景框');
+    setTip('将包装条码对准取景框\nUPC 和 Serial No. 可一次同时识别');
     scan.reader.decodeFromStream(scan.stream, videoEl, (result) => {
-      if (result && scan.active) onScanned(result.getText());
+      if (result && scan.active) {
+        handleCodes([{ text: result.getText(), format: zxingFmtName(result) }]);
+      }
     });
   } catch (e) {
     setTip('条码识别组件加载失败\n请检查网络，或使用「拍照识别」');
@@ -568,31 +585,117 @@ async function tick() {
     if (videoEl.readyState >= 2) {
       const codes = await scan.detector.detect(videoEl);
       if (codes && codes.length && scan.active) {
-        onScanned(codes[0].rawValue);
+        handleCodes(codes.map(c => ({ text: c.rawValue, format: c.format })));
         return;
       }
     }
   } catch (e) { /* 忽略单帧错误 */ }
-  scan.timer = setTimeout(tick, 200);
+  scheduleTick();
 }
 
-function onScanned(text) {
-  if (!text) return;
-  const targetId = scan.target;
-  closeScanner();
-
-  const el = getEl(targetId);
-  if (el) {
-    el.value = text;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
+/* 识别节奏：优先逐帧回调（更快），否则 80ms 轮询 */
+function scheduleTick() {
+  if (!scan.active) return;
+  if (videoEl.requestVideoFrameCallback) {
+    scan.rvfcId = videoEl.requestVideoFrameCallback(() => tick());
+  } else {
+    scan.timer = setTimeout(tick, 80);
   }
-  buzz(30);
-  toast('已识别：' + (text.length > 28 ? text.slice(0, 28) + '…' : text));
+}
+function cancelTick() {
+  clearTimeout(scan.timer);
+  if (scan.rvfcId && videoEl.cancelVideoFrameCallback) {
+    try { videoEl.cancelVideoFrameCallback(scan.rvfcId); } catch (e) {}
+  }
+  scan.rvfcId = 0;
+}
+
+function setField(id, text) {
+  const el = getEl(id);
+  if (!el) return;
+  el.value = text;
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+/* 条码分类：UPC / EAN（8~14 位纯数字）→ 69码；其余（如 Serial No. 的 Code 128）→ SN码 */
+const EAN_UPC_SET = new Set(['ean_13', 'ean_8', 'upc_a', 'upc_e']);
+function classifyCode(text, format) {
+  const t = String(text || '').trim();
+  if (!t) return null;
+  const isUpcLike = EAN_UPC_SET.has(format || '') || /^\d{8,14}$/.test(t);
+  return isUpcLike ? 'code69' : 'sn';
+}
+
+/* ZXing 返回的数字格式 → 名称 */
+function zxingFmtName(result) {
+  try {
+    const Z = window.ZXing;
+    const f = result.getBarcodeFormat();
+    const M = {};
+    M[Z.BarcodeFormat.EAN_13] = 'ean_13';   M[Z.BarcodeFormat.EAN_8] = 'ean_8';
+    M[Z.BarcodeFormat.UPC_A] = 'upc_a';     M[Z.BarcodeFormat.UPC_E] = 'upc_e';
+    M[Z.BarcodeFormat.CODE_128] = 'code_128'; M[Z.BarcodeFormat.CODE_39] = 'code_39';
+    M[Z.BarcodeFormat.CODE_93] = 'code_93'; M[Z.BarcodeFormat.ITF] = 'itf';
+    M[Z.BarcodeFormat.CODABAR] = 'codabar'; M[Z.BarcodeFormat.QR_CODE] = 'qr_code';
+    M[Z.BarcodeFormat.DATA_MATRIX] = 'data_matrix'; M[Z.BarcodeFormat.PDF_417] = 'pdf417';
+    return M[f] || '';
+  } catch (e) { return ''; }
+}
+
+/* 识别结果处理：商品字段扫码时智能分流，一次可同时填 69码 + SN码 */
+function handleCodes(codes) {
+  if (!codes || !codes.length || !scan.active) return;
+  const targetId = scan.target || '';
+  const isGoods = targetId === 'f-code69' || targetId === 'f-sn';
+
+  if (!isGoods) {
+    closeScanner();
+    setField(targetId, codes[0].text);
+    buzz(30);
+    toast('已识别：' + (codes[0].text.length > 28 ? codes[0].text.slice(0, 28) + '…' : codes[0].text));
+    return;
+  }
+
+  const want   = targetId === 'f-code69' ? '69码' : 'SN码';
+  const otherW = targetId === 'f-code69' ? 'SN码' : '69码';
+  let hitTarget = false, hitOther = false;
+
+  codes.forEach(c => {
+    const cls = classifyCode(c.text, c.format);
+    if (cls === 'code69') {
+      if (targetId === 'f-code69' || !getEl('f-code69').value) {
+        setField('f-code69', c.text);
+        targetId === 'f-code69' ? hitTarget = true : hitOther = true;
+      }
+    } else if (cls === 'sn') {
+      if (targetId === 'f-sn' || !getEl('f-sn').value) {
+        setField('f-sn', c.text);
+        targetId === 'f-sn' ? hitTarget = true : hitOther = true;
+      }
+    }
+  });
+
+  if (hitTarget) {
+    closeScanner();
+    buzz(30);
+    toast(hitOther ? '69码、SN码已一次填好' : '已识别并填入' + want);
+  } else if (hitOther) {
+    setTip('已填入' + otherW + '，继续对准' + want + '条码…');
+  } else {
+    setTip('识别到的条码不是' + want + '\n请对准包装上对应的条码');
+  }
 }
 
 function closeScanner() {
   scan.active = false;
-  clearTimeout(scan.timer);
+  cancelTick();
+
+  // 关闭闪光灯
+  if (scan.torchTrack && scan.torchOn) {
+    try { scan.torchTrack.applyConstraints({ advanced: [{ torch: false }] }); } catch (e) {}
+  }
+  scan.torchTrack = null;
+  scan.torchOn = false;
 
   if (scan.reader) {
     try { scan.reader.reset(); } catch (e) {}
@@ -621,6 +724,18 @@ getEl('scanClose').addEventListener('click', closeScanner);
 getEl('scanCancel').addEventListener('click', closeScanner);
 getEl('scanPhoto').addEventListener('click', () => getEl('photoInput').click());
 
+/* 闪光灯（设备支持时显示） */
+getEl('scanTorch').addEventListener('click', async () => {
+  if (!scan.torchTrack) return;
+  const next = !scan.torchOn;
+  try {
+    await scan.torchTrack.applyConstraints({ advanced: [{ torch: next }] });
+    scan.torchOn = next;
+    getEl('scanTorch').style.background = next ? 'rgba(255,214,10,.9)' : '';
+    getEl('scanTorch').style.color = next ? '#1c1c1e' : '';
+  } catch (e) { toast('闪光灯打开失败'); }
+});
+
 /* ZXing 懒加载 */
 let zxingPromise = null;
 function loadZXing() {
@@ -639,23 +754,28 @@ function loadZXing() {
 /* ============================================================
    6. 拍照 / 相册 识别条码
    ============================================================ */
-async function decodeImageFile(file) {
+async function decodeImageCodes(file) {
   const url = URL.createObjectURL(file);
   try {
-    // 优先原生 API
+    // 优先原生 API（可一次取到多张条码）
     if ('BarcodeDetector' in window) {
       try {
         const bmp = await createImageBitmap(file);
         const det = new BarcodeDetector({ formats: BARCODE_FORMATS });
         const codes = await det.detect(bmp);
-        if (codes && codes.length) return codes[0].rawValue;
+        if (codes && codes.length) {
+          return codes.map(c => ({ text: c.rawValue, format: c.format }));
+        }
       } catch (e) { /* 降级 */ }
     }
     // ZXing 兜底
     await loadZXing();
     const reader = new window.ZXing.BrowserMultiFormatReader();
     const res = await reader.decodeFromImageUrl(url);
-    return res && res.getText ? res.getText() : null;
+    if (res && res.getText) {
+      return [{ text: res.getText(), format: zxingFmtName(res) }];
+    }
+    return null;
   } catch (e) {
     return null;
   } finally {
@@ -669,10 +789,10 @@ getEl('photoInput').addEventListener('change', async e => {
   if (!file) return;
 
   setTip('正在识别图片中的条码…');
-  const code = await decodeImageFile(file);
+  const codes = await decodeImageCodes(file);
 
-  if (code) {
-    onScanned(code);
+  if (codes && codes.length && scan.active) {
+    handleCodes(codes);
   } else {
     setTip('未识别到条码\n请让条码更清晰、占画面更大后重试');
     scan.active = true; // 保持可再次选择
