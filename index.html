@@ -1114,11 +1114,17 @@ function fillFromText(raw) {
   let m = text.match(/购买日期\s*[：:]\s*(\d{4})\s*[年\-\/.]\s*(\d{1,2})\s*[月\-\/.]\s*(\d{1,2})/);
   if (m) set('buyDate', `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`);
 
-  // 支付渠道
-  set('payChannel', pick(/支付渠道\s*[：:]\s*([^\s；;，,。\n]{2,12})/));
+  // 支付渠道（含云闪付小票的「渠道商名称」）
+  set('payChannel', pick(/(?:支付渠道|渠道商名称)\s*[：:]\s*([^\s；;，,。\n]{2,12})/));
 
-  // 交易单号
-  set('tradeNo', pick(/交易单号\s*[：:]\s*(\d{10,})/));
+  // 交易单号：
+  // ① 电子发票「交易单号：123...」同行
+  // ② 云闪付小票「银商订单号：」后换行跟号码（号码可能被 OCR 拆散出空格）
+  let tno = pick(/(?:交易单号|银商订单号|订单号)\s*[：:]?[\s\n]*([\d][\d\s]{9,60})/);
+  if (tno) {
+    tno = tno.replace(/\s+/g, '');
+    if (/^\d{10,40}$/.test(tno)) set('tradeNo', tno);
+  }
 
   return count;
 }
